@@ -1,0 +1,8 @@
+# Custom Caddy build with the Cloudflare DNS provider module, needed for the
+# DNS-01 ACME challenge (lets us get a real cert without exposing port 80/443
+# for challenge validation - see README.md for why that matters here).
+FROM caddy:2-builder AS builder
+RUN xcaddy build --with github.com/caddy-dns/cloudflare
+
+FROM caddy:2
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy

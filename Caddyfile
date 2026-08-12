@@ -1,0 +1,22 @@
+{
+	servers {
+		protocols h1 h2
+	}
+}
+
+# Matches BOTH the real hostname and any other Host header (e.g. a raw IP).
+# This second form is required: Meraki's own client resolves the hostname to
+# an IP and sends that literal IP as the HTTP Host header (while still using
+# the correct hostname for TLS SNI) - without the catch-all, Caddy's
+# host-based routing would reject those requests before they ever reach the
+# receiver. See README.md for the full story.
+{$CLOUDSHARK_DOMAIN}:{$CLOUDSHARK_PORT}, :{$CLOUDSHARK_PORT} {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	log {
+		output file {$CLOUDSHARK_LOG_PATH:caddy_access.log}
+		format json
+	}
+	reverse_proxy {$CLOUDSHARK_UPSTREAM:localhost:8642}
+}

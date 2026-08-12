@@ -1,0 +1,7 @@
+.env
+captures/
+*.pcap
+caddy_access.log
+.venv/
+__pycache__/
+*.pyc
