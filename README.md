@@ -11,26 +11,18 @@ yourself.
 
 ## Why it's built this way (read this before changing the Caddyfile)
 
-Two non-obvious things this setup works around, found the hard way:
+One non-obvious thing this setup works around, found the hard way:
 
-1. **Cloudflare Tunnel (quick or named) does not work here.** Meraki's
-   backend resolves the CloudShark URL's hostname to an IP and connects
-   using that literal IP rather than the hostname. Cloudflare's shared edge
-   routes by Host/SNI and rejects direct-IP connections with a 403 (anti
-   domain-fronting protection) - this happens regardless of tunnel type.
-   You need an endpoint with a genuinely dedicated public IP (a port-forward
-   to your own IP, or a VM with its own IP). This stack assumes the latter.
-
-2. **Meraki's HTTP client sends the raw resolved IP as the HTTP `Host`
-   header, even though it correctly sends the real hostname as the TLS
-   SNI.** A Caddyfile site block matching only on the hostname
-   (`cloudshark.example.com:8443 { ... }`) will pass the TLS handshake but
-   then fail to route the HTTP request, causing Meraki's client to see a
-   broken connection mid-upload ("Error writing to server"). The fix is the
-   catch-all in the Caddyfile: `{$CLOUDSHARK_DOMAIN}:{$CLOUDSHARK_PORT}, :{$CLOUDSHARK_PORT}`
-   matches the real hostname (for automatic cert management) **and** any
-   other Host header on that port (so the raw-IP request still gets
-   proxied).
+**Meraki's HTTP client sends the raw resolved IP as the HTTP `Host`
+header, even though it correctly sends the real hostname as the TLS
+SNI.** A Caddyfile site block matching only on the hostname
+(`cloudshark.example.com:8443 { ... }`) will pass the TLS handshake but
+then fail to route the HTTP request, causing Meraki's client to see a
+broken connection mid-upload ("Error writing to server"). The fix is the
+catch-all in the Caddyfile: `{$CLOUDSHARK_DOMAIN}:{$CLOUDSHARK_PORT}, :{$CLOUDSHARK_PORT}`
+matches the real hostname (for automatic cert management) **and** any
+other Host header on that port (so the raw-IP request still gets
+proxied).
 
 Also: TLS uses Cloudflare's **DNS-01** ACME challenge (via the
 `caddy-dns/cloudflare` plugin, built into the custom `Dockerfile.caddy`)
