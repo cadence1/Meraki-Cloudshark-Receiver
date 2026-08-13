@@ -18,5 +18,13 @@
 		output file {$CLOUDSHARK_LOG_PATH:caddy_access.log}
 		format json
 	}
+
+	# NOTE: /captures browsing/download access control lives in server.py
+	# (query-param token), not here. An IP-based restriction was tried first
+	# but Docker Desktop's networking on Windows doesn't preserve real client
+	# source IPs for published ports - every inbound connection looks like it
+	# comes from the same internal gateway address, confirmed empirically by
+	# successfully browsing /captures from a genuinely different public IP
+	# despite the restriction being in place. See README.md.
 	reverse_proxy {$CLOUDSHARK_UPSTREAM:localhost:8642}
 }

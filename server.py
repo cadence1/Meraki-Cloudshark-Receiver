@@ -18,11 +18,13 @@ see README.md in this folder), and in Meraki Dashboard set:
     CloudShark URL:      <public tunnel URL>
     CloudShark API key:  value of CLOUDSHARK_RECEIVER_TOKEN in ../.env
 """
+import asyncio
+import contextlib
 import json
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -40,6 +42,10 @@ INDEX_PATH = CAPTURES_DIR / "index.json"
 TOKEN = os.getenv("CLOUDSHARK_RECEIVER_TOKEN")
 PORT = int(os.getenv("CLOUDSHARK_RECEIVER_PORT", "8642"))
 BIND_HOST = os.getenv("CLOUDSHARK_RECEIVER_BIND_HOST", "127.0.0.1")
+# Captures older than this many days are auto-deleted (files + index entries).
+# Set to 0 to disable auto-cleanup and keep everything.
+RETENTION_DAYS = int(os.getenv("CLOUDSHARK_RETENTION_DAYS", "7"))
+PRUNE_INTERVAL_SECONDS = 3600
 
 if not TOKEN:
     sys.exit("CLOUDSHARK_RECEIVER_TOKEN not set in .env - refusing to start with no auth token")
@@ -63,6 +69,48 @@ def _save_index(idx):
 
 def _check_token(request_token):
     return request_token == TOKEN
+
+
+def prune_old_captures():
+    """Delete captures (file + index entry) older than RETENTION_DAYS. No-op
+    if RETENTION_DAYS is 0."""
+    if RETENTION_DAYS <= 0:
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
+    idx = _load_index()
+    removed = []
+    for cid, entry in list(idx.items()):
+        try:
+            uploaded_at = datetime.fromisoformat(entry["uploaded_at"])
+        except (KeyError, ValueError):
+            continue
+        if uploaded_at < cutoff:
+            path = CAPTURES_DIR / entry["path"]
+            path.unlink(missing_ok=True)
+            del idx[cid]
+            removed.append(cid)
+    if removed:
+        _save_index(idx)
+        print(f"[prune] removed {len(removed)} capture(s) older than {RETENTION_DAYS}d: {removed}")
+
+
+async def _prune_loop():
+    while True:
+        try:
+            prune_old_captures()
+        except Exception as e:
+            print(f"[prune] error: {e}")
+        await asyncio.sleep(PRUNE_INTERVAL_SECONDS)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app):
+    prune_old_captures()  # once at startup too, not just on the hourly timer
+    task = asyncio.create_task(_prune_loop())
+    yield
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 async def upload(request: Request):
@@ -112,10 +160,26 @@ async def upload(request: Request):
     return JSONResponse({"filename": filename, "id": capture_id})
 
 
+def _require_browse_token(request: Request):
+    """Query-param token gate for browsing/downloading captures. Separate
+    concern from the upload endpoint's path-segment token, but reuses the
+    same secret for simplicity. Returns a 403 response if missing/wrong,
+    else None. Enforced in the app itself rather than by IP - Docker
+    Desktop's networking on Windows doesn't preserve real client source
+    IPs for published ports, so any IP-based restriction at the proxy
+    layer would be a no-op (confirmed empirically, not just in theory)."""
+    if request.query_params.get("token") != TOKEN:
+        return PlainTextResponse("Forbidden - append ?token=<CLOUDSHARK_RECEIVER_TOKEN> to the URL", status_code=403)
+    return None
+
+
 async def list_captures(request: Request):
+    denied = _require_browse_token(request)
+    if denied:
+        return denied
     idx = _load_index()
     rows = "".join(
-        f'<tr><td><a href="/captures/{cid}">{cid}</a></td><td>{v["filename"]}</td>'
+        f'<tr><td><a href="/captures/{cid}?token={TOKEN}">{cid}</a></td><td>{v["filename"]}</td>'
         f'<td>{v["size_bytes"]:,} B</td><td>{v["uploaded_at"]}</td><td>{v.get("source_ip") or ""}</td></tr>'
         for cid, v in sorted(idx.items(), key=lambda kv: kv[1]["uploaded_at"], reverse=True)
     )
@@ -129,6 +193,9 @@ async def list_captures(request: Request):
 
 
 async def get_capture(request: Request):
+    denied = _require_browse_token(request)
+    if denied:
+        return denied
     capture_id = request.path_params["capture_id"]
     idx = _load_index()
     entry = idx.get(capture_id)
@@ -141,12 +208,15 @@ async def health(request: Request):
     return PlainTextResponse("ok")
 
 
-app = Starlette(routes=[
-    Route("/api/v1/{token}/upload", upload, methods=["POST", "PUT"]),
-    Route("/captures", list_captures, methods=["GET"]),
-    Route("/captures/{capture_id}", get_capture, methods=["GET"]),
-    Route("/", health, methods=["GET"]),
-])
+app = Starlette(
+    routes=[
+        Route("/api/v1/{token}/upload", upload, methods=["POST", "PUT"]),
+        Route("/captures", list_captures, methods=["GET"]),
+        Route("/captures/{capture_id}", get_capture, methods=["GET"]),
+        Route("/", health, methods=["GET"]),
+    ],
+    lifespan=lifespan,
+)
 
 
 if __name__ == "__main__":
@@ -155,4 +225,8 @@ if __name__ == "__main__":
     print(f"  base URL for Dashboard's 'CloudShark URL' field: <your public hostname>")
     print(f"  API key for Dashboard's 'CloudShark API key' field: {TOKEN}")
     print(f"Captures list: http://{BIND_HOST}:{PORT}/captures")
+    if RETENTION_DAYS > 0:
+        print(f"Auto-deleting captures older than {RETENTION_DAYS} days (checked hourly)")
+    else:
+        print("Retention: disabled - captures are kept forever until manually removed")
     uvicorn.run(app, host=BIND_HOST, port=PORT)

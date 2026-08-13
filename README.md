@@ -58,8 +58,10 @@ need port 80 or 443 - pick whatever port you can actually forward.
 
 ## Using it
 
-- Received captures: `https://<CLOUDSHARK_DOMAIN>:<CLOUDSHARK_PORT>/captures`
-  lists everything with download links.
+- Received captures: `https://<CLOUDSHARK_DOMAIN>:<CLOUDSHARK_PORT>/captures?token=<CLOUDSHARK_RECEIVER_TOKEN>`
+  lists everything with download links (the token is required as a query
+  param - see Security notes below for why this isn't IP-restricted
+  instead).
 - Raw files + an `index.json` manifest persist in the `captures` Docker
   volume (`docker volume inspect cloudshark_receiver_captures` to find the
   path, or `docker compose cp receiver:/data/captures ./captures` to copy
@@ -75,6 +77,18 @@ need port 80 or 443 - pick whatever port you can actually forward.
   scanner/bot traffic hitting random paths is normal and harmless (nothing
   else is exposed, wrong tokens get a 401) - just don't reuse
   `CLOUDSHARK_RECEIVER_TOKEN` anywhere else.
+- `/captures` (browsing/downloading received files) requires the same token
+  as a `?token=...` query param, enforced in `server.py`. **This is
+  deliberately not IP-based.** An IP allowlist (local networks + Meraki's
+  published cloud ranges) was tried first, but Docker Desktop on Windows
+  doesn't preserve real client source IPs for published ports - every
+  inbound connection is NAT'd to look like it came from Docker's internal
+  gateway, so any IP check at the proxy layer is a no-op regardless of who's
+  actually connecting (confirmed empirically: `/captures` was reachable from
+  a genuinely different public IP despite the restriction being active). If
+  you deploy this on a platform that does preserve source IPs (native Linux,
+  a VPS, etc.), an IP-based restriction in the Caddyfile would work fine
+  there and is a reasonable thing to add back.
 - The Cloudflare API token only needs "Edit zone DNS" scoped to the one
   zone - don't grant it broader access.
 - Captures may contain unencrypted payload data (credentials, personal
