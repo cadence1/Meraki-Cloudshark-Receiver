@@ -9,22 +9,7 @@ Not a packet decoder/viewer - it just accepts the upload, saves the raw
 capture, and lists/serves what's landed. Open the `.pcap` in Wireshark
 yourself.
 
-## Why it's built this way (read this before changing the Caddyfile)
-
-One non-obvious thing this setup works around, found the hard way:
-
-**Meraki's HTTP client sends the raw resolved IP as the HTTP `Host`
-header, even though it correctly sends the real hostname as the TLS
-SNI.** A Caddyfile site block matching only on the hostname
-(`cloudshark.example.com:8443 { ... }`) will pass the TLS handshake but
-then fail to route the HTTP request, causing Meraki's client to see a
-broken connection mid-upload ("Error writing to server"). The fix is the
-catch-all in the Caddyfile: `{$CLOUDSHARK_DOMAIN}:{$CLOUDSHARK_PORT}, :{$CLOUDSHARK_PORT}`
-matches the real hostname (for automatic cert management) **and** any
-other Host header on that port (so the raw-IP request still gets
-proxied).
-
-Also: TLS uses Cloudflare's **DNS-01** ACME challenge (via the
+TLS uses Cloudflare's **DNS-01** ACME challenge (via the
 `caddy-dns/cloudflare` plugin, built into the custom `Dockerfile.caddy`)
 rather than the HTTP-01/TLS-ALPN-01 challenges, specifically so this doesn't
 need port 80 or 443 - pick whatever port you can actually forward.
@@ -73,24 +58,14 @@ need port 80 or 443 - pick whatever port you can actually forward.
 
 ## Security notes
 
-- This is a token-gated upload endpoint on the open internet. Background
-  scanner/bot traffic hitting random paths is normal and harmless (nothing
-  else is exposed, wrong tokens get a 401) - just don't reuse
-  `CLOUDSHARK_RECEIVER_TOKEN` anywhere else.
-- `/captures` (browsing/downloading received files) requires the same token
-  as a `?token=...` query param, enforced in `server.py`. **This is
-  deliberately not IP-based.** An IP allowlist (local networks + Meraki's
-  published cloud ranges) was tried first, but Docker Desktop on Windows
-  doesn't preserve real client source IPs for published ports - every
-  inbound connection is NAT'd to look like it came from Docker's internal
-  gateway, so any IP check at the proxy layer is a no-op regardless of who's
-  actually connecting (confirmed empirically: `/captures` was reachable from
-  a genuinely different public IP despite the restriction being active). If
-  you deploy this on a platform that does preserve source IPs (native Linux,
-  a VPS, etc.), an IP-based restriction in the Caddyfile would work fine
-  there and is a reasonable thing to add back.
-- The Cloudflare API token only needs "Edit zone DNS" scoped to the one
-  zone - don't grant it broader access.
+- `/captures` (browsing/downloading received files) requires a `?token=...`
+  query param matching `CLOUDSHARK_RECEIVER_TOKEN`, enforced in `server.py`.
+  This is deliberately not IP-based - Docker Desktop on Windows doesn't
+  preserve real client source IPs for published ports, so an IP allowlist
+  at the proxy layer would be a no-op regardless of who's actually
+  connecting (confirmed empirically). On a platform that does preserve
+  source IPs (native Linux, a VPS, etc.), an IP-based restriction in the
+  Caddyfile would work fine there instead.
 - Captures may contain unencrypted payload data (credentials, personal
   data, etc. depending on what was captured) - the transport here is TLS,
   but treat the stored files with the same care you'd give the original
